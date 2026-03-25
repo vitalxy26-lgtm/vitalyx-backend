@@ -1,8 +1,13 @@
 const User = require('../models/User.model');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const sgMail = require('@sendgrid/mail');
 const { z } = require('zod');
+
+// Initialize SendGrid
+if (process.env.SENDGRID_API_KEY) {
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+}
 
 // ── Serializer — the ONLY shape that leaves the API ─────────────────────────
 const serializeUser = (user) => ({
@@ -58,17 +63,6 @@ const profileSchema = z.object({
     equipment: z.enum(['home_no_equipment', 'home_with_equipment', 'gym']).optional(),
 });
 
-// ── Nodemailer transporter ──────────────────────────────────────────────────
-const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true, // true for 465, false for 587
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: (process.env.SMTP_PASS || '').trim(), // trim leading space (#16)
-    },
-});
-
 // ── Disposable-email blocklist ──────────────────────────────────────────────
 const disposableDomains = ['tempmail.com', '10minutemail.com', 'tmail.com', 'mailinator.com', 'guerrillamail.com'];
 
@@ -116,13 +110,11 @@ exports.signup = async (req, res) => {
             verification_token_expires,
         });
 
-        await user.save();
-
-        // Send Email via Nodemailer (Fire and forget, do not await)
-        if (process.env.SMTP_USER) {
-            transporter.sendMail({
-                from: `"VITALYX" <${process.env.SMTP_USER}>`,
+        // Send Email via SendGrid (Fire and forget, do not await)
+        if (process.env.SENDGRID_API_KEY && process.env.SMTP_USER) {
+            sgMail.send({
                 to: email,
+                from: process.env.SMTP_USER, // Need verified sender email in SendGrid
                 subject: 'Verify Your VITALYX Account',
                 html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
                     <h2 style="color:#13ec80">Welcome to VITALYX! 💪</h2>
@@ -130,10 +122,11 @@ exports.signup = async (req, res) => {
                     <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-                text: `Your verification code is: ${verification_token}. Expires in 24 hours.`,
-            }).catch(mailError => console.error('Background Email Error:', mailError.message));
+            }).catch(mailError => console.error('SendGrid Background Email Error:', mailError.message));
         } else {
-            console.warn('SMTP_USER not set. Skipping background email. Code:', verification_token);
+            console.log('\n=============================================');
+            console.log(`🚀 DEV MODE: Verification code for ${email} is: ${verification_token}`);
+            console.log('=============================================\n');
         }
 
         // Generate JWT — NO fallback secret, 1-day expiry
@@ -269,22 +262,23 @@ exports.resendVerification = async (req, res) => {
         user.verification_token_expires = verification_token_expires;
         await user.save();
 
-        // Resend email (Fire and forget)
-        if (process.env.SMTP_USER) {
-            transporter.sendMail({
-                from: `"VITALYX" <${process.env.SMTP_USER}>`,
+        // Resend email via SendGrid (Fire and forget)
+        if (process.env.SENDGRID_API_KEY && process.env.SMTP_USER) {
+            sgMail.send({
                 to: user.email,
+                from: process.env.SMTP_USER,
                 subject: 'New Verification Code for VITALYX',
                 html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
                     <h2 style="color:#13ec80">Your New Code 🔄</h2>
                     <p style="color:#d1d5db">Here is your fresh verification code:</p>
-                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
+                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${newCode}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-                text: `Your new verification code is: ${verification_token}. Expires in 24 hours.`,
-            }).catch(mailError => console.error('Background Resend Email Error:', mailError.message));
+            }).catch(mailError => console.error('SendGrid Background Resend Error:', mailError.message));
         } else {
-            console.warn('SMTP credentials not set. Skipping email. Code:', verification_token);
+            console.log('\n=============================================');
+            console.log(`🚀 DEV MODE: NEW Verification code for ${user.email} is: ${newCode}`);
+            console.log('=============================================\n');
         }
 
         res.json({ message: 'Verification code resent successfully' });
