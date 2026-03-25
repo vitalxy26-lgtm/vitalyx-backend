@@ -91,7 +91,7 @@ exports.chatCoach = async (req, res) => {
         User Profile: ${context ? JSON.stringify(context) : 'No specific context provided'}${behaviourStr}`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-8b-instruct",
+            model: "meta/llama-3.1-70b-instruct",
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: message }
@@ -142,7 +142,7 @@ exports.generateWorkoutPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-8b-instruct",
+            model: "meta/llama-3.1-70b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 3000,
@@ -211,7 +211,7 @@ exports.generateWeeklyPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-8b-instruct",
+            model: "meta/llama-3.1-70b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 4000,
@@ -407,7 +407,7 @@ Return ONLY a JSON object, no markdown, no backticks:
 }`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-8b-instruct",
+            model: "meta/llama-3.1-70b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.85,
             max_tokens: 2048,
@@ -502,7 +502,7 @@ exports.logMeal = async (req, res) => {
         }`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-8b-instruct",
+            model: "meta/llama-3.1-70b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.1,
             max_tokens: 512,
