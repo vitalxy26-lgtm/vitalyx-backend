@@ -60,10 +60,7 @@ const profileSchema = z.object({
 
 // ── Nodemailer transporter ──────────────────────────────────────────────────
 const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT) || 587,
-    secure: process.env.SMTP_SECURE === 'true',
-    family: 4, // Force IPv4 to prevent ENETUNREACH on Render's IPv6
+    service: 'gmail',
     auth: {
         user: process.env.SMTP_USER,
         pass: (process.env.SMTP_PASS || '').trim(), // trim leading space (#16)
@@ -119,26 +116,22 @@ exports.signup = async (req, res) => {
 
         await user.save();
 
-        // Send Email via Nodemailer
-        try {
-            if (process.env.SMTP_HOST && process.env.SMTP_USER) {
-                await transporter.sendMail({
-                    from: `"VITALYX" <${process.env.SMTP_USER}>`,
-                    to: email,
-                    subject: 'Verify Your VITALYX Account',
-                    html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
-                        <h2 style="color:#13ec80">Welcome to VITALYX! 💪</h2>
-                        <p style="color:#d1d5db">Your verification code is:</p>
-                        <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
-                        <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
-                    </div>`,
-                    text: `Your verification code is: ${verification_token}. Expires in 24 hours.`,
-                });
-            } else {
-                console.warn('SMTP credentials not set. Skipping email. Code:', verification_token);
-            }
-        } catch (mailError) {
-            console.error('Failed to send verification email:', mailError.message);
+        // Send Email via Nodemailer (Fire and forget, do not await)
+        if (process.env.SMTP_USER) {
+            transporter.sendMail({
+                from: `"VITALYX" <${process.env.SMTP_USER}>`,
+                to: email,
+                subject: 'Verify Your VITALYX Account',
+                html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
+                    <h2 style="color:#13ec80">Welcome to VITALYX! 💪</h2>
+                    <p style="color:#d1d5db">Your verification code is:</p>
+                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
+                    <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
+                </div>`,
+                text: `Your verification code is: ${verification_token}. Expires in 24 hours.`,
+            }).catch(mailError => console.error('Background Email Error:', mailError.message));
+        } else {
+            console.warn('SMTP_USER not set. Skipping background email. Code:', verification_token);
         }
 
         // Generate JWT — NO fallback secret, 1-day expiry
@@ -274,26 +267,22 @@ exports.resendVerification = async (req, res) => {
         user.verification_token_expires = verification_token_expires;
         await user.save();
 
-        // Send Email via Nodemailer
-        try {
-            if (process.env.SMTP_HOST && process.env.SMTP_USER) {
-                await transporter.sendMail({
-                    from: `"VITALYX" <${process.env.SMTP_USER}>`,
-                    to: user.email,
-                    subject: 'Verify Your VITALYX Account',
-                    html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
-                        <h2 style="color:#13ec80">Your New Verification Code</h2>
-                        <p style="color:#d1d5db">Your new verification code is:</p>
-                        <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
-                        <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
-                    </div>`,
-                    text: `Your new verification code is: ${verification_token}. Expires in 24 hours.`,
-                });
-            } else {
-                console.warn('SMTP credentials not set. Skipping email. Code:', verification_token);
-            }
-        } catch (mailError) {
-            console.error('Failed to send verification email:', mailError.message);
+        // Resend email (Fire and forget)
+        if (process.env.SMTP_USER) {
+            transporter.sendMail({
+                from: `"VITALYX" <${process.env.SMTP_USER}>`,
+                to: user.email,
+                subject: 'New Verification Code for VITALYX',
+                html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
+                    <h2 style="color:#13ec80">Your New Code 🔄</h2>
+                    <p style="color:#d1d5db">Here is your fresh verification code:</p>
+                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
+                    <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
+                </div>`,
+                text: `Your new verification code is: ${verification_token}. Expires in 24 hours.`,
+            }).catch(mailError => console.error('Background Resend Email Error:', mailError.message));
+        } else {
+            console.warn('SMTP credentials not set. Skipping email. Code:', verification_token);
         }
 
         res.json({ message: 'Verification code resent successfully' });
