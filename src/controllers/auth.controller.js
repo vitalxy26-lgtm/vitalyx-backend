@@ -1,13 +1,11 @@
 const User = require('../models/User.model');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const sgMail = require('@sendgrid/mail');
+const { Resend } = require('resend');
 const { z } = require('zod');
 
-// Initialize SendGrid
-if (process.env.SENDGRID_API_KEY) {
-    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-}
+// Initialize Resend
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ── Serializer — the ONLY shape that leaves the API ─────────────────────────
 const serializeUser = (user) => ({
@@ -110,11 +108,11 @@ exports.signup = async (req, res) => {
             verification_token_expires,
         });
 
-        // Send Email via SendGrid (Fire and forget, do not await)
-        if (process.env.SENDGRID_API_KEY && process.env.SMTP_USER) {
-            sgMail.send({
+        // Send Email via Resend (Fire and forget, do not await)
+        if (resend && process.env.SMTP_USER) {
+            resend.emails.send({
                 to: email,
-                from: process.env.SMTP_USER, // Need verified sender email in SendGrid
+                from: process.env.SMTP_USER, // e.g., onboarding@resend.dev or verified domain
                 subject: 'Verify Your VITALYX Account',
                 html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
                     <h2 style="color:#13ec80">Welcome to VITALYX! 💪</h2>
@@ -122,7 +120,7 @@ exports.signup = async (req, res) => {
                     <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-            }).catch(mailError => console.error('SendGrid Background Email Error:', mailError.message));
+            }).catch(mailError => console.error('Resend Background Email Error:', mailError.message));
         } else {
             console.log('\n=============================================');
             console.log(`🚀 DEV MODE: Verification code for ${email} is: ${verification_token}`);
@@ -262,9 +260,9 @@ exports.resendVerification = async (req, res) => {
         user.verification_token_expires = verification_token_expires;
         await user.save();
 
-        // Resend email via SendGrid (Fire and forget)
-        if (process.env.SENDGRID_API_KEY && process.env.SMTP_USER) {
-            sgMail.send({
+        // Resend email via Resend (Fire and forget)
+        if (resend && process.env.SMTP_USER) {
+            resend.emails.send({
                 to: user.email,
                 from: process.env.SMTP_USER,
                 subject: 'New Verification Code for VITALYX',
@@ -274,7 +272,7 @@ exports.resendVerification = async (req, res) => {
                     <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${newCode}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-            }).catch(mailError => console.error('SendGrid Background Resend Error:', mailError.message));
+            }).catch(mailError => console.error('Resend Background Resend Error:', mailError.message));
         } else {
             console.log('\n=============================================');
             console.log(`🚀 DEV MODE: NEW Verification code for ${user.email} is: ${newCode}`);
