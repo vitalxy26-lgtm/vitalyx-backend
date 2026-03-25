@@ -20,6 +20,9 @@ router.post('/mealplan', authMiddleware, aiPlanLimiter, aiController.generateMea
 // Scan Food Image
 router.post('/scanfood', authMiddleware, aiScanLimiter, aiController.scanFoodImage);
 
+// Lookup Food by Text Name
+router.post('/lookupfood', authMiddleware, aiScanLimiter, aiController.lookupFoodByText);
+
 // Log Meal with AI Calculation
 router.post('/log-meal', authMiddleware, aiController.logMeal);
 

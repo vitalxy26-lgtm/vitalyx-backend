@@ -23,6 +23,11 @@ exports.updateProfile = async (req, res) => {
             return res.status(400).json({ error: 'No valid fields to update' });
         }
 
+        // Auto-track when weight is updated
+        if (updates.weight !== undefined) {
+            updates.weight_updated_at = new Date();
+        }
+
         const user = await User.findByIdAndUpdate(userId, updates, { new: true }).select('-password_hash');
         if (!user) return res.status(404).json({ error: 'User not found' });
 

@@ -23,6 +23,7 @@ const serializeUser = (user) => ({
     is_premium: Boolean(user.is_premium),
     subscription_plan: user.subscription_plan ?? 'free',
     subscription_expires_at: user.subscription_expires_at ?? null,
+    weight_updated_at: user.weight_updated_at ?? null,
 });
 
 // Re-export serializeUser so other controllers can import it

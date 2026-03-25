@@ -28,6 +28,9 @@ const UserSchema = new mongoose.Schema({
 
   // Workout preference
   equipment: { type: String, enum: ['home_no_equipment', 'home_with_equipment', 'gym'], default: 'home_no_equipment' },
+
+  // Weight check-in tracking
+  weight_updated_at: { type: Date, default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);

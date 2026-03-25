@@ -12,12 +12,9 @@ const getOpenAIModel = () => {
 
 // Robustly extract JSON from AI response even if it has surrounding text
 const extractJSON = (text) => {
-    // Try direct parse first
     try { return JSON.parse(text.trim()); } catch (_) { }
-    // Strip markdown code fences
     const stripped = text.replace(/```json/g, '').replace(/```/g, '').trim();
     try { return JSON.parse(stripped); } catch (_) { }
-    // Find first { ... } or [ ... ] block
     const objMatch = stripped.match(/(\{[\s\S]*\})/);
     if (objMatch) { try { return JSON.parse(objMatch[1]); } catch (_) { } }
     const arrMatch = stripped.match(/(\[[\s\S]*\])/);
@@ -45,7 +42,6 @@ const getBehaviourContext = async (userId) => {
             ? Math.round(dietLogs.reduce((s, d) => s + (d.t_p || 0), 0) / dietLogs.length)
             : null;
 
-        // Gather all meal times across logs
         const mealTimes = dietLogs.flatMap(d => d.items.map(i => i.at)).filter(Boolean);
         const uniqueTimes = [...new Set(mealTimes)].slice(0, 5);
 
@@ -75,7 +71,6 @@ exports.chatCoach = async (req, res) => {
 
         const openai = getOpenAIModel();
 
-        // Inject live behaviour context if user is authenticated
         let behaviourStr = '';
         if (userId) {
             const behaviour = await getBehaviourContext(userId);
@@ -91,7 +86,7 @@ exports.chatCoach = async (req, res) => {
         User Profile: ${context ? JSON.stringify(context) : 'No specific context provided'}${behaviourStr}`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-70b-instruct",
+            model: "meta/llama-3.1-405b-instruct",
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: message }
@@ -142,7 +137,7 @@ exports.generateWorkoutPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-70b-instruct",
+            model: "meta/llama-3.1-405b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 3000,
@@ -172,7 +167,6 @@ exports.generateWeeklyPlan = async (req, res) => {
 
         const openai = getOpenAIModel();
 
-        // Pick muscle group split based on goal
         const splitHint = goal === 'muscle_gain'
             ? 'Monday=Chest, Tuesday=Back, Wednesday=Shoulders, Thursday=Arms (Biceps+Triceps), Friday=Abs/Core, Saturday=Legs'
             : goal === 'fat_loss'
@@ -211,7 +205,7 @@ exports.generateWeeklyPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-70b-instruct",
+            model: "meta/llama-3.1-405b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 4000,
@@ -222,7 +216,6 @@ exports.generateWeeklyPlan = async (req, res) => {
 
         const days = extractJSON(rawText);
 
-        // Upsert — one doc per user, overwrite on regenerate
         const WeeklyPlan = require('../models/WeeklyPlan.model');
         const plan = await WeeklyPlan.findOneAndUpdate(
             { user_id: userId },
@@ -262,7 +255,6 @@ exports.generateMealPlan = async (req, res) => {
 
         const openai = getOpenAIModel();
 
-        // Fetch user profile for personalized meals
         const User = require('../models/User.model');
         const user = userId ? await User.findById(userId) : null;
 
@@ -271,90 +263,82 @@ exports.generateMealPlan = async (req, res) => {
         const fitnessLevel = user?.fitness_level || 'intermediate';
         const equipment = user?.equipment || 'home_no_equipment';
 
-        // Seed with day-of-week + random number for variety
         const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         const today = days[new Date().getDay()];
         const randomSeed = Math.floor(Math.random() * 1000);
 
-        // ── Combined goal × equipment guidance (9 combos) ─────────────
         const comboGuide = {
-            // ── FAT LOSS ─────────────────────────────────────────────
             'fat_loss|gym': {
-                macros: `Protein: ${Math.round(weight * 2.2)}g (very high — preserve muscle during deficit). Carbs: ${Math.round(weight * 2)}g (time around workouts). Fats: ${Math.round(weight * 0.7)}g (keep low).`,
-                meals: 'Post-workout: fast-digesting protein + simple carbs (whey shake + banana). Other meals: grilled chicken, fish, egg whites, Greek yogurt, salads, stir-fried veggies with brown rice. Avoid: fried foods, naan, biryani, heavy paneer curries, sweets.',
-                style: 'The user lifts heavy at the gym while cutting — they need high protein to preserve muscle mass, with carbs timed around training.',
+                macros: `Protein: ${Math.round(weight * 2.2)}g (very high). Carbs: ${Math.round(weight * 2)}g. Fats: ${Math.round(weight * 0.7)}g.`,
+                meals: 'Post-workout: protein shake. Other meals: grilled chicken, fish, egg whites, Greek yogurt, salads. Avoid: fried foods, sweets.',
+                style: 'The user lifts heavy at the gym while cutting.',
             },
             'fat_loss|home_with_equipment': {
-                macros: `Protein: ${Math.round(weight * 2)}g. Carbs: ${Math.round(weight * 1.8)}g (moderate). Fats: ${Math.round(weight * 0.7)}g.`,
-                meals: 'Focus on high-volume, low-calorie foods: boiled eggs, grilled chicken, moong dal, veggie soup, cucumber raita, oats, sprout salad, roti (not naan). Avoid: fried snacks, biryani, heavy gravies.',
-                style: 'The user trains at home with dumbbells/bands — moderate intensity, deficit-focused diet with high satiety.',
+                macros: `Protein: ${Math.round(weight * 2)}g. Carbs: ${Math.round(weight * 1.8)}g. Fats: ${Math.round(weight * 0.7)}g.`,
+                meals: 'High-volume: boiled eggs, grilled chicken, moong dal, veggie soup, cucumber raita, oats, sprout salad, roti.',
+                style: 'The user trains at home with dumbbells/bands — deficit-focused diet.',
             },
             'fat_loss|home_no_equipment': {
-                macros: `Protein: ${Math.round(weight * 1.8)}g. Carbs: ${Math.round(weight * 1.5)}g (lower since calorie burn is less). Fats: ${Math.round(weight * 0.6)}g.`,
-                meals: 'Light, filling meals: poha with peanuts, boiled egg salad, dal-roti, steamed veggies, buttermilk, makhana, fruit bowl. Keep portions small since no heavy lifting. Avoid: oily parathas, rice-heavy meals, sweets.',
-                style: 'The user does bodyweight workouts at home with no equipment — lighter meals, high protein, calorie-conscious.',
+                macros: `Protein: ${Math.round(weight * 1.8)}g. Carbs: ${Math.round(weight * 1.5)}g. Fats: ${Math.round(weight * 0.6)}g.`,
+                meals: 'Light, filling: poha with peanuts, boiled egg salad, dal-roti, steamed veggies, buttermilk, makhana.',
+                style: 'The user does bodyweight workouts at home.',
             },
-            // ── MUSCLE GAIN ──────────────────────────────────────────
             'muscle_gain|gym': {
-                macros: `Protein: ${Math.round(weight * 2.4)}g (critical for hypertrophy). Carbs: ${Math.round(weight * 4)}g (high — fuel heavy lifting). Fats: ${Math.round(weight * 1)}g.`,
-                meals: 'Calorie-dense, clean foods: chicken breast, eggs (whole), paneer in moderation, rajma-rice, oats with whey, sweet potato, peanut butter toast, banana shake. Post-workout: protein shake + dextrose. Eat 5-6 smaller meals if needed.',
-                style: 'The user trains heavy at the gym for muscle growth — they need a caloric surplus with very high protein and carbs for recovery and hypertrophy.',
+                macros: `Protein: ${Math.round(weight * 2.4)}g. Carbs: ${Math.round(weight * 4)}g. Fats: ${Math.round(weight * 1)}g.`,
+                meals: 'Calorie-dense: chicken breast, eggs, paneer, rajma-rice, oats, sweet potato, peanut butter toast, banana shake.',
+                style: 'The user trains heavy at the gym for muscle growth.',
             },
             'muscle_gain|home_with_equipment': {
                 macros: `Protein: ${Math.round(weight * 2.2)}g. Carbs: ${Math.round(weight * 3.5)}g. Fats: ${Math.round(weight * 0.9)}g.`,
-                meals: 'Moderate surplus: eggs, chicken, dal-chawal, curd-rice, oat smoothies, chana, sprouts, cottage cheese. Add calorie-dense snacks: nuts, dates, peanut butter banana. Avoid junk food surplus.',
-                style: 'The user trains with home equipment (dumbbells/resistance bands) — they need a moderate surplus with quality protein for lean gains.',
+                meals: 'Moderate surplus: eggs, chicken, dal-chawal, curd-rice, oat smoothies, chana, sprouts.',
+                style: 'The user trains with home equipment for lean gains.',
             },
             'muscle_gain|home_no_equipment': {
                 macros: `Protein: ${Math.round(weight * 2)}g. Carbs: ${Math.round(weight * 3)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Lean surplus: dal, rajma, chole, eggs, milk, curd, roti, banana, sattu drink, soaked almonds. Bodyweight training burns less so keep surplus modest (+200-300 cal). Focus on protein timing around workouts.',
-                style: 'The user does bodyweight training at home — modest caloric surplus focused on protein to support calisthenic muscle growth.',
+                meals: 'Lean surplus: dal, rajma, chole, eggs, milk, curd, roti, banana, sattu drink, soaked almonds.',
+                style: 'The user does bodyweight training at home.',
             },
-            // ── MAINTAIN WEIGHT ──────────────────────────────────────
             'maintain_weight|gym': {
                 macros: `Protein: ${Math.round(weight * 1.8)}g. Carbs: ${Math.round(weight * 3)}g. Fats: ${Math.round(weight * 0.9)}g.`,
-                meals: 'Balanced, clean meals: grilled chicken, fish, dal, brown rice, roti, seasonal vegetables, curd, fruit. Post-workout protein. Keep portions consistent day-to-day.',
-                style: 'The user lifts at the gym and wants to maintain weight — balanced macros with enough protein to preserve muscle.',
+                meals: 'Balanced meals: grilled chicken, fish, dal, brown rice, roti, seasonal vegetables, curd, fruit.',
+                style: 'The user lifts at the gym and wants to maintain weight.',
             },
             'maintain_weight|home_with_equipment': {
                 macros: `Protein: ${Math.round(weight * 1.7)}g. Carbs: ${Math.round(weight * 2.8)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Balanced home-cooked meals: eggs, dal-roti, sabzi, curd-rice, fruit, grilled paneer (small portion), poha, upma. Consistent portions, no need for surplus or deficit.',
-                style: 'The user trains at home with equipment for general fitness — eat at maintenance with whole foods.',
+                meals: 'Balanced home meals: eggs, dal-roti, sabzi, curd-rice, fruit, grilled paneer.',
+                style: 'The user trains at home with equipment for general fitness.',
             },
             'maintain_weight|home_no_equipment': {
                 macros: `Protein: ${Math.round(weight * 1.6)}g. Carbs: ${Math.round(weight * 2.5)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Simple balanced meals: idli-sambar, roti-sabzi, dal-rice, boiled eggs, fruits, buttermilk, nuts. Keep portions moderate since activity level is lower.',
-                style: 'The user does light bodyweight exercises at home — eat at maintenance with balanced, whole-food meals.',
+                meals: 'Simple balanced meals: idli-sambar, roti-sabzi, dal-rice, boiled eggs, fruits, buttermilk, nuts.',
+                style: 'The user does light bodyweight exercises at home.',
             },
         };
 
         const key = `${goal}|${equipment}`;
         const guide = comboGuide[key] || comboGuide['maintain_weight|home_no_equipment'];
 
-        // Fitness-level adjustment
         const levelNote = fitnessLevel === 'advanced'
-            ? 'Advanced athlete — increase portion sizes by 10-15% and add a pre-workout meal if training fasted.'
+            ? 'Advanced athlete — increase portion sizes.'
             : fitnessLevel === 'beginner'
-                ? 'Beginner — keep meals simple and easy to prepare. Avoid exotic supplements or complex recipes.'
-                : 'Intermediate — standard portions with consistent meal timing.';
+                ? 'Beginner — keep meals simple.'
+                : 'Intermediate — standard portions.';
 
-        // ── Diet preference food rules ────────────────────────────
         const dietRules = {
-            'vegetarian': 'STRICTLY VEGETARIAN: No meat, no fish, no eggs. Use paneer (sparingly), tofu, dal, rajma, chole, soy chunks, milk, curd, cottage cheese, nuts, seeds as protein sources. Get creative with lentils, legumes, and dairy.',
-            'vegan': 'STRICTLY VEGAN: No animal products at all — no dairy, no eggs, no honey. Use tofu, tempeh, soy milk, lentils, chickpeas, peanut butter, quinoa, seeds (chia, flax, hemp), nuts, nutritional yeast for protein.',
-            'non_vegetarian': 'Non-vegetarian: Use chicken breast, fish, eggs, turkey, lean mutton as primary protein. Supplement with dal, curd, paneer in moderation. Prioritize lean cuts over fried/processed meat.',
+            'vegetarian': 'STRICTLY VEGETARIAN: No meat, no fish, no eggs. Use paneer, tofu, dal, rajma, chole, soy chunks, milk, curd.',
+            'vegan': 'STRICTLY VEGAN: No animal products. Use tofu, tempeh, soy milk, lentils, chickpeas, peanut butter, quinoa, seeds, nuts.',
+            'non_vegetarian': 'Non-vegetarian: Use chicken breast, fish, eggs, turkey, lean mutton as primary protein.',
         };
         const dietRule = dietRules[diet_preference] || dietRules['non_vegetarian'];
 
-        // ── Determine meal count based on calorie target ──────────
         const cals = targetCalories || 2000;
         const needsExtraMeals = cals >= 2500 || goal === 'muscle_gain';
         const mealCountNote = needsExtraMeals
-            ? `The calorie target is high (${cals} kcal). Generate 5-6 meals: breakfast, mid-morning snack, lunch, evening snack, dinner, and optionally a pre-bed meal. Spread protein evenly across all meals.`
-            : `Generate 4 meals: breakfast, lunch, dinner, and 1-2 snacks. Keep it simple and balanced.`;
+            ? `The calorie target is high (${cals} kcal). Generate 5-6 meals.`
+            : `Generate 4 meals: breakfast, lunch, dinner, and 1-2 snacks.`;
 
         const extraMealsExample = needsExtraMeals
-            ? '"extra_meals": [{ "label": "Mid-Morning", "name": "Dish", "calories": 250, "protein": 15, "carbs": 30, "fats": 8 }, { "label": "Pre-Bed", "name": "Dish", "calories": 200, "protein": 20, "carbs": 10, "fats": 8 }],'
+            ? '"extra_meals": [{ "label": "Mid-Morning", "name": "Dish", "calories": 250, "protein": 15, "carbs": 30, "fats": 8 }],'
             : '"extra_meals": [],';
 
         const prompt = `You are an elite Indian sports nutritionist creating a ${today}'s meal plan using AFFORDABLE, everyday Indian foods.
@@ -380,24 +364,21 @@ MEAL COUNT:
 ${mealCountNote}
 
 AFFORDABILITY RULES (CRITICAL):
-1. Use ONLY affordable, everyday Indian kitchen ingredients: dal, roti, rice, eggs, curd, sabzi, oats, poha, upma, idli, dosa, sprouts, chana, rajma, moong, sattu, milk, banana, seasonal fruits, peanuts, jaggery, etc.
-2. Avoid expensive items like: quinoa, avocado, Greek yogurt, salmon, whey protein, acai, almond milk, chia seeds, imported berries, olive oil.
-3. For each meal, provide 2-3 ALTERNATIVES — budget-friendly Indian swaps that give roughly the same calories and protein. This way if the user doesn't have a particular food, they can pick a substitute.
+1. Use ONLY affordable, everyday Indian kitchen ingredients.
+2. For each meal, provide 2-3 ALTERNATIVES.
 
 STRICT RULES:
-1. Every meal MUST use affordable Indian home-cooked food. Be creative with regional variety (South Indian, North Indian, Bengali, Gujarati, etc.).
-2. Do NOT always suggest paneer, biryani, or naan. Use cheaper protein sources: eggs, dal, curd, soy chunks, chana, sprouts.
-3. All calorie and macro values must be realistic NUMBERS (not strings).
-4. Total calories across ALL meals (including extra_meals) should closely match ${cals}.
-5. Variety seed: ${randomSeed} — use this to pick different dishes than usual.
-6. RESPECT THE DIET PREFERENCE — never suggest forbidden foods.
-7. Each alternative must have the SAME calorie range (±50 kcal) as the main dish.
+1. Every meal MUST use affordable Indian home-cooked food.
+2. All calorie and macro values must be realistic NUMBERS.
+3. Total calories across ALL meals should closely match ${cals}.
+4. Variety seed: ${randomSeed}
+5. RESPECT THE DIET PREFERENCE.
 
 Return ONLY a JSON object, no markdown, no backticks:
 {
-  "breakfast": { "name": "Dish Name", "calories": 400, "protein": 25, "carbs": 45, "fats": 10, "alternatives": ["Alt Dish 1 (~400 kcal)", "Alt Dish 2 (~400 kcal)"] },
-  "lunch": { "name": "Dish Name", "calories": 550, "protein": 35, "carbs": 50, "fats": 15, "alternatives": ["Alt Dish 1 (~550 kcal)", "Alt Dish 2 (~550 kcal)"] },
-  "dinner": { "name": "Dish Name", "calories": 500, "protein": 30, "carbs": 40, "fats": 12, "alternatives": ["Alt Dish 1 (~500 kcal)", "Alt Dish 2 (~500 kcal)"] },
+  "breakfast": { "name": "Dish Name", "calories": 400, "protein": 25, "carbs": 45, "fats": 10, "alternatives": ["Alt 1", "Alt 2"] },
+  "lunch": { "name": "Dish Name", "calories": 550, "protein": 35, "carbs": 50, "fats": 15, "alternatives": ["Alt 1", "Alt 2"] },
+  "dinner": { "name": "Dish Name", "calories": 500, "protein": 30, "carbs": 40, "fats": 12, "alternatives": ["Alt 1", "Alt 2"] },
   "snacks": [{ "name": "Snack Name", "calories": 150, "protein": 10, "carbs": 15, "fats": 5, "alternatives": ["Alt 1", "Alt 2"] }],
   ${extraMealsExample}
   "total_calories": ${cals},
@@ -407,7 +388,7 @@ Return ONLY a JSON object, no markdown, no backticks:
 }`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-70b-instruct",
+            model: "meta/llama-3.1-405b-instruct",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.85,
             max_tokens: 2048,
@@ -438,8 +419,7 @@ exports.scanFoodImage = async (req, res) => {
         const prompt = `Identify the food in this image. 
         Provide an estimated calorie count and macronutrient breakdown per standard serving.
         
-        Return ONLY a stringified JSON object. Do not include markdown formatting like \`\`\`json.
-        The JSON should follow this structure exactly but USE REAL ESTIMATED NUMBERS instead of these examples:
+        Return ONLY a stringified JSON object. Do not include markdown formatting.
         {
           "food_name": "String name of the food",
           "confidence_score": "Percentage string",
@@ -482,36 +462,64 @@ exports.scanFoodImage = async (req, res) => {
     }
 };
 
-exports.logMeal = async (req, res) => {
+exports.lookupFoodByText = async (req, res) => {
     try {
-        const { food_name, base_calories, base_protein, base_carbs, base_fats, quantity, loggedAt } = req.body;
-        const userId = req.user?.userId;
+        const { foodName } = req.body;
+
+        if (!foodName || !foodName.trim()) {
+            return res.status(400).json({ error: 'Food name is required' });
+        }
 
         const openai = getOpenAIModel();
 
-        const prompt = `Mathematically calculate the precise macros for ${quantity} portions. 
-        One portion is: Calories: ${base_calories}, Protein: ${base_protein}g, Carbs: ${base_carbs}g, Fats: ${base_fats}g.
-        
-        Return ONLY a stringified JSON object. Do not include markdown formatting like \`\`\`json.
-        The JSON should follow this structure exactly:
-        {
-          "calories": calculated_number,
-          "protein": calculated_number,
-          "carbs": calculated_number,
-          "fats": calculated_number
-        }`;
+        const prompt = `You are a nutrition database. The user wants to know the macros of: "${foodName.trim()}"
+
+Estimate the calorie count and macronutrient breakdown per 100g serving of this food.
+If the food name is ambiguous, pick the most common interpretation.
+If it is a cooked Indian dish, estimate for a standard home-cooked serving.
+
+Return ONLY a JSON object. No markdown, no backticks:
+{
+  "food_name": "Recognized food name",
+  "confidence_score": "85%",
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fats": number,
+  "unit": "100g"
+}`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-70b-instruct",
+            model: "meta/llama-3.1-405b-instruct",
             messages: [{ role: "user", content: prompt }],
-            temperature: 0.1,
+            temperature: 0.2,
             max_tokens: 512,
         });
 
         let rawText = completion.choices[0]?.message?.content || "";
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
-        const m = extractJSON(rawText); // calculated macros
+        const data = extractJSON(rawText);
+        res.json({ data });
+
+    } catch (error) {
+        console.error('Food Lookup Error:', error);
+        res.status(500).json({ error: error.message || 'Failed to look up food' });
+    }
+};
+
+exports.logMeal = async (req, res) => {
+    try {
+        const { food_name, base_calories, base_protein, base_carbs, base_fats, quantity, loggedAt } = req.body;
+        const userId = req.user?.userId;
+
+        const qty = parseFloat(quantity) || 1;
+        const m = {
+            calories: Math.round(base_calories * qty),
+            protein: Math.round(base_protein * qty * 10) / 10,
+            carbs: Math.round(base_carbs * qty * 10) / 10,
+            fats: Math.round(base_fats * qty * 10) / 10,
+        };
 
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -550,7 +558,6 @@ exports.logMeal = async (req, res) => {
 
         await dietLog.save();
 
-        // Return readable keys to frontend
         res.json({
             message: 'Meal logged successfully', log: {
                 food_name, calories: m.calories, protein: m.protein,
@@ -559,11 +566,10 @@ exports.logMeal = async (req, res) => {
         });
     } catch (error) {
         console.error('Log Meal Error:', error);
-        res.status(500).json({ error: error.message || 'Failed to log meal using AI computation' });
+        res.status(500).json({ error: error.message || 'Failed to log meal' });
     }
 };
 
-// ── AI Store Recommendations ────────────────────────────────────────────────
 exports.generateStoreRecommendations = async (req, res) => {
     try {
         const userId = req.user?.userId;
@@ -580,7 +586,7 @@ A user has the following profile:
 - Recent Workout Focus: ${recent_focus || 'general fitness'}
 
 Recommend exactly 6 real, widely-available fitness or nutrition products tailored to this user's needs.
-Choose a smart mix: 2-3 supplements/nutrition items, 2-3 equipment/gear items — all appropriate for their equipment setting and goal.
+Choose a smart mix: 2-3 supplements/nutrition items, 2-3 equipment/gear items.
 
 Return ONLY a JSON array, no markdown, no extra text:
 [
@@ -588,7 +594,7 @@ Return ONLY a JSON array, no markdown, no extra text:
     "name": "Exact real product name",
     "brand": "Brand name",
     "category": "Supplements | Equipment | Nutrition | Apparel | Recovery",
-    "why": "One sentence: why this specific product suits this user's goal/profile",
+    "why": "One sentence: why this product suits this user",
     "price_range": "₹500–₹2000",
     "rating": 4.5,
     "search_query": "amazon search query string for this product"
@@ -597,21 +603,20 @@ Return ONLY a JSON array, no markdown, no extra text:
 
 IMPORTANT:
 - Use Indian Rupee (₹) for price ranges
-- "search_query" must be a clean, effective Amazon India search term for the product
 - Products must be real (e.g. MuscleBlaze Whey, Boldfit Dumbbells, etc.)
 - Tailor to Indian market availability`;
 
         const completion = await openai.chat.completions.create({
-            model: 'meta/llama-3.1-8b-instruct',
+            model: "meta/llama-3.1-405b-instruct",
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.4,
             max_tokens: 2000,
         });
 
-        const rawText = completion.choices[0]?.message?.content || '';
+        let rawText = completion.choices[0]?.message?.content || '';
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         const products = extractJSON(rawText);
 
-        // Build Amazon India affiliate search links
         const affiliateTag = process.env.AMAZON_AFFILIATE_TAG || '';
         const tagParam = affiliateTag ? `&tag=${affiliateTag}` : '';
 
