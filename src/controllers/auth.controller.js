@@ -80,7 +80,7 @@ exports.signup = async (req, res) => {
         // Validate input
         const parsed = signupSchema.safeParse(req.body);
         if (!parsed.success) {
-            return res.status(400).json({ error: parsed.error.errors[0].message });
+            return res.status(400).json({ error: parsed.error?.issues?.[0]?.message || 'Invalid input' });
         }
         const { name, email, password } = parsed.data;
 
@@ -163,7 +163,7 @@ exports.login = async (req, res) => {
         // Validate input
         const parsed = loginSchema.safeParse(req.body);
         if (!parsed.success) {
-            return res.status(400).json({ error: parsed.error.errors[0].message });
+            return res.status(400).json({ error: parsed.error?.issues?.[0]?.message || 'Invalid input' });
         }
         const { email, password } = parsed.data;
 
