@@ -1,11 +1,20 @@
 const User = require('../models/User.model');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const { z } = require('zod');
 
-// Initialize Resend
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+// ── Nodemailer transporter ──────────────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true, // true for 465, false for 587
+    family: 4,    // FORCE IPv4 to specifically fix ENETUNREACH
+    auth: {
+        user: process.env.SMTP_USER,
+        pass: (process.env.SMTP_PASS || '').trim(),
+    },
+});
 
 // ── Serializer — the ONLY shape that leaves the API ─────────────────────────
 const serializeUser = (user) => ({
@@ -108,23 +117,20 @@ exports.signup = async (req, res) => {
             verification_token_expires,
         });
 
-        // Send Email via Resend (Fire and forget, do not await)
-        if (resend && process.env.SMTP_USER) {
-            resend.emails.send({
+        // Send Email via Nodemailer (Fire and forget, do not await)
+        if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+            transporter.sendMail({
+                from: `"VITALYX" <${process.env.SMTP_USER}>`,
                 to: email,
-                from: process.env.SMTP_USER, // e.g., onboarding@resend.dev or verified domain
                 subject: 'Verify Your VITALYX Account',
+                text: `Your verification code is: ${verification_token}. Expires in 24 hours.`,
                 html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
                     <h2 style="color:#13ec80">Welcome to VITALYX! 💪</h2>
                     <p style="color:#d1d5db">Your verification code is:</p>
                     <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-            }).catch(mailError => console.error('Resend Background Email Error:', mailError.message));
-        } else {
-            console.log('\n=============================================');
-            console.log(`🚀 DEV MODE: Verification code for ${email} is: ${verification_token}`);
-            console.log('=============================================\n');
+            }).catch(mailError => console.error('Background Email Error:', mailError.message));
         }
 
         // Generate JWT — NO fallback secret, 1-day expiry
@@ -260,23 +266,20 @@ exports.resendVerification = async (req, res) => {
         user.verification_token_expires = verification_token_expires;
         await user.save();
 
-        // Resend email via Resend (Fire and forget)
-        if (resend && process.env.SMTP_USER) {
-            resend.emails.send({
+        // Resend email via Nodemailer (Fire and forget)
+        if (process.env.SMTP_USER && process.env.SMTP_PASS) {
+            transporter.sendMail({
+                from: `"VITALYX" <${process.env.SMTP_USER}>`,
                 to: user.email,
-                from: process.env.SMTP_USER,
                 subject: 'New Verification Code for VITALYX',
+                text: `Your new verification code is: ${verification_token}. Expires in 24 hours.`,
                 html: `<div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#111827;border-radius:16px;">
                     <h2 style="color:#13ec80">Your New Code 🔄</h2>
                     <p style="color:#d1d5db">Here is your fresh verification code:</p>
-                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${newCode}</h1>
+                    <h1 style="color:#13ec80;letter-spacing:12px;font-size:40px">${verification_token}</h1>
                     <p style="color:#9ca3af;font-size:13px">This code expires in 24 hours.</p>
                 </div>`,
-            }).catch(mailError => console.error('Resend Background Resend Error:', mailError.message));
-        } else {
-            console.log('\n=============================================');
-            console.log(`🚀 DEV MODE: NEW Verification code for ${user.email} is: ${newCode}`);
-            console.log('=============================================\n');
+            }).catch(mailError => console.error('Background Resend Email Error:', mailError.message));
         }
 
         res.json({ message: 'Verification code resent successfully' });
