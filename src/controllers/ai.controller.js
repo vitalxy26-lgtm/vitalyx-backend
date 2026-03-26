@@ -1,13 +1,9 @@
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const getOpenAIModel = () => {
-    if (!process.env.GEMINI_API_KEY) {
-        throw new Error('GEMINI_API_KEY is missing from environment variables.');
-    }
-    return new OpenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-    });
+const getGeminiModel = () => {
+    if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    return genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 }
 
 // Robustly extract JSON from AI response even if it has surrounding text
@@ -69,8 +65,7 @@ exports.chatCoach = async (req, res) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
-        const openai = getOpenAIModel();
-
+        const model = getGeminiModel();
         let behaviourStr = '';
         if (userId) {
             const behaviour = await getBehaviourContext(userId);
@@ -85,17 +80,8 @@ exports.chatCoach = async (req, res) => {
         If they ask about diet, provide healthy, macro-aware suggestions.
         User Profile: ${context ? JSON.stringify(context) : 'No specific context provided'}${behaviourStr}`;
 
-        const completion = await openai.chat.completions.create({
-            model: "gemini-1.5-flash",
-            messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: message }
-            ],
-            temperature: 0.7,
-            max_tokens: 1024,
-        });
-
-        const responseText = completion.choices[0]?.message?.content || "Coach ran into an issue finding an answer.";
+        const result = await model.generateContent(systemPrompt + "\n\nUser Message: " + message);
+        const responseText = result.response.text() || "Coach ran into an issue finding an answer.";
         res.json({ reply: responseText });
     } catch (error) {
         console.error('AI Coach Error:', error);
@@ -107,7 +93,7 @@ exports.generateWorkoutPlan = async (req, res) => {
     try {
         const { goal, fitness_level, equipment, days, target_weight, target_timeframe_weeks } = req.body;
 
-        const openai = getOpenAIModel();
+        const model = getGeminiModel();
 
         const prompt = `Generate a structured ${days || 3}-day workout plan for someone with the following profile:
         Goal: ${goal}
@@ -136,321 +122,11 @@ exports.generateWorkoutPlan = async (req, res) => {
             }
         ]`;
 
-        const completion = await openai.chat.completions.create({
-            model: "gemini-1.5-flash",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 3000,
-        });
-
-        let rawText = completion.choices[0]?.message?.content || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const plan = extractJSON(rawText);
-        res.json({ plan });
-
-    } catch (error) {
-        console.error('Workout Generation Error:', error);
-        res.status(500).json({ error: error.message || 'Failed to generate workout plan' });
-    }
-};
-
-exports.generateWeeklyPlan = async (req, res) => {
-    try {
-        const userId = req.user?.userId;
-        const { goal, fitness_level, equipment, custom_request, duration_minutes } = req.body;
-        const durationMinutes =
-            Number.isFinite(Number(duration_minutes)) && Number(duration_minutes) > 0
-                ? Number(duration_minutes)
-                : 60;
-        const customRequest = custom_request?.trim();
-
-        const openai = getOpenAIModel();
-
-        const splitHint = goal === 'muscle_gain'
-            ? 'Monday=Chest, Tuesday=Back, Wednesday=Shoulders, Thursday=Arms (Biceps+Triceps), Friday=Abs/Core, Saturday=Legs'
-            : goal === 'fat_loss'
-                ? 'Monday=Full Body HIIT, Tuesday=Upper Body, Wednesday=Core/Abs, Thursday=Lower Body, Friday=Full Body Cardio, Saturday=Active Recovery/Stretching'
-                : 'Monday=Chest, Tuesday=Abs/Core, Wednesday=Back, Thursday=Shoulders, Friday=Arms, Saturday=Legs';
-
-        const prompt = `Generate a full 6-day weekly workout plan for someone with:
-        Goal: ${goal || 'maintain_weight'}
-        Fitness Level: ${fitness_level || 'intermediate'}
-        Equipment: ${equipment || 'home_no_equipment'}
-        Target workout duration per day: approximately ${durationMinutes} minutes
-        Additional user instructions: ${customRequest || 'None'}
-
-        Use this muscle group split: ${splitHint}
-        Sunday is a rest day, do not include it.
-
-        REQUIREMENTS:
-        - Each day must have minimum 4 exercises
-        - Total workout duration should stay close to ${durationMinutes} minutes per day
-        - Assign dur_s (duration per set in seconds, e.g. 90)
-        - Assign rest_s (rest timer in seconds between exercises, e.g. 45-90)
-        - Tailor exercises to the equipment available
-        - Respect the additional user instructions whenever they are safe and realistic
-
-        Return ONLY a stringified JSON array. No markdown, no backticks.
-        Use this exact structure:
-        [
-          {
-            "day": "Monday",
-            "muscle_group": "Chest",
-            "focus": "Push Strength",
-            "exercises": [
-              { "name": "Pushups", "sets": 3, "reps": "12-15", "dur_s": 90, "rest_s": 60, "tip": "Keep core tight" }
-            ]
-          }
-        ]`;
-
-        const completion = await openai.chat.completions.create({
-            model: "gemini-1.5-flash",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 4000,
-        });
-
-        let rawText = completion.choices[0]?.message?.content || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const days = extractJSON(rawText);
-
-        const WeeklyPlan = require('../models/WeeklyPlan.model');
-        const plan = await WeeklyPlan.findOneAndUpdate(
-            { user_id: userId },
-            {
-                user_id: userId,
-                generated_at: new Date(),
-                duration_minutes: durationMinutes,
-                custom_request: customRequest || '',
-                days,
-            },
-            { upsert: true, returnDocument: 'after' }
-        );
-
-        res.json({ plan });
-
-    } catch (error) {
-        console.error('Weekly Plan Error:', error);
-        res.status(500).json({ error: error.message || 'Failed to generate weekly plan' });
-    }
-};
-
-exports.getWeeklyPlan = async (req, res) => {
-    try {
-        const userId = req.user?.userId;
-        const WeeklyPlan = require('../models/WeeklyPlan.model');
-        const plan = await WeeklyPlan.findOne({ user_id: userId });
-        res.json({ plan: plan || null });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch weekly plan' });
-    }
-};
-
-exports.generateMealPlan = async (req, res) => {
-    try {
-        const userId = req.user?.userId;
-        const { targetCalories, diet_preference } = req.body;
-
-        const openai = getOpenAIModel();
-
-        const User = require('../models/User.model');
-        const user = userId ? await User.findById(userId) : null;
-
-        const weight = user?.weight || 70;
-        const goal = user?.goal || 'maintain_weight';
-        const fitnessLevel = user?.fitness_level || 'intermediate';
-        const equipment = user?.equipment || 'home_no_equipment';
-
-        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        const today = days[new Date().getDay()];
-        const randomSeed = Math.floor(Math.random() * 1000);
-
-        const comboGuide = {
-            'fat_loss|gym': {
-                macros: `Protein: ${Math.round(weight * 2.2)}g (very high). Carbs: ${Math.round(weight * 2)}g. Fats: ${Math.round(weight * 0.7)}g.`,
-                meals: 'Post-workout: protein shake. Other meals: grilled chicken, fish, egg whites, Greek yogurt, salads. Avoid: fried foods, sweets.',
-                style: 'The user lifts heavy at the gym while cutting.',
-            },
-            'fat_loss|home_with_equipment': {
-                macros: `Protein: ${Math.round(weight * 2)}g. Carbs: ${Math.round(weight * 1.8)}g. Fats: ${Math.round(weight * 0.7)}g.`,
-                meals: 'High-volume: boiled eggs, grilled chicken, moong dal, veggie soup, cucumber raita, oats, sprout salad, roti.',
-                style: 'The user trains at home with dumbbells/bands — deficit-focused diet.',
-            },
-            'fat_loss|home_no_equipment': {
-                macros: `Protein: ${Math.round(weight * 1.8)}g. Carbs: ${Math.round(weight * 1.5)}g. Fats: ${Math.round(weight * 0.6)}g.`,
-                meals: 'Light, filling: poha with peanuts, boiled egg salad, dal-roti, steamed veggies, buttermilk, makhana.',
-                style: 'The user does bodyweight workouts at home.',
-            },
-            'muscle_gain|gym': {
-                macros: `Protein: ${Math.round(weight * 2.4)}g. Carbs: ${Math.round(weight * 4)}g. Fats: ${Math.round(weight * 1)}g.`,
-                meals: 'Calorie-dense: chicken breast, eggs, paneer, rajma-rice, oats, sweet potato, peanut butter toast, banana shake.',
-                style: 'The user trains heavy at the gym for muscle growth.',
-            },
-            'muscle_gain|home_with_equipment': {
-                macros: `Protein: ${Math.round(weight * 2.2)}g. Carbs: ${Math.round(weight * 3.5)}g. Fats: ${Math.round(weight * 0.9)}g.`,
-                meals: 'Moderate surplus: eggs, chicken, dal-chawal, curd-rice, oat smoothies, chana, sprouts.',
-                style: 'The user trains with home equipment for lean gains.',
-            },
-            'muscle_gain|home_no_equipment': {
-                macros: `Protein: ${Math.round(weight * 2)}g. Carbs: ${Math.round(weight * 3)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Lean surplus: dal, rajma, chole, eggs, milk, curd, roti, banana, sattu drink, soaked almonds.',
-                style: 'The user does bodyweight training at home.',
-            },
-            'maintain_weight|gym': {
-                macros: `Protein: ${Math.round(weight * 1.8)}g. Carbs: ${Math.round(weight * 3)}g. Fats: ${Math.round(weight * 0.9)}g.`,
-                meals: 'Balanced meals: grilled chicken, fish, dal, brown rice, roti, seasonal vegetables, curd, fruit.',
-                style: 'The user lifts at the gym and wants to maintain weight.',
-            },
-            'maintain_weight|home_with_equipment': {
-                macros: `Protein: ${Math.round(weight * 1.7)}g. Carbs: ${Math.round(weight * 2.8)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Balanced home meals: eggs, dal-roti, sabzi, curd-rice, fruit, grilled paneer.',
-                style: 'The user trains at home with equipment for general fitness.',
-            },
-            'maintain_weight|home_no_equipment': {
-                macros: `Protein: ${Math.round(weight * 1.6)}g. Carbs: ${Math.round(weight * 2.5)}g. Fats: ${Math.round(weight * 0.8)}g.`,
-                meals: 'Simple balanced meals: idli-sambar, roti-sabzi, dal-rice, boiled eggs, fruits, buttermilk, nuts.',
-                style: 'The user does light bodyweight exercises at home.',
-            },
-        };
-
-        const key = `${goal}|${equipment}`;
-        const guide = comboGuide[key] || comboGuide['maintain_weight|home_no_equipment'];
-
-        const levelNote = fitnessLevel === 'advanced'
-            ? 'Advanced athlete — increase portion sizes.'
-            : fitnessLevel === 'beginner'
-                ? 'Beginner — keep meals simple.'
-                : 'Intermediate — standard portions.';
-
-        const dietRules = {
-            'vegetarian': 'STRICTLY VEGETARIAN: No meat, no fish, no eggs. Use paneer, tofu, dal, rajma, chole, soy chunks, milk, curd.',
-            'vegan': 'STRICTLY VEGAN: No animal products. Use tofu, tempeh, soy milk, lentils, chickpeas, peanut butter, quinoa, seeds, nuts.',
-            'non_vegetarian': 'Non-vegetarian: Use chicken breast, fish, eggs, turkey, lean mutton as primary protein.',
-        };
-        const dietRule = dietRules[diet_preference] || dietRules['non_vegetarian'];
-
-        const cals = targetCalories || 2000;
-        const needsExtraMeals = cals >= 2500 || goal === 'muscle_gain';
-        const mealCountNote = needsExtraMeals
-            ? `The calorie target is high (${cals} kcal). Generate 5-6 meals.`
-            : `Generate 4 meals: breakfast, lunch, dinner, and 1-2 snacks.`;
-
-        const extraMealsExample = needsExtraMeals
-            ? '"extra_meals": [{ "label": "Mid-Morning", "name": "Dish", "calories": 250, "protein": 15, "carbs": 30, "fats": 8 }],'
-            : '"extra_meals": [],';
-
-        const prompt = `You are an elite Indian sports nutritionist creating a ${today}'s meal plan using AFFORDABLE, everyday Indian foods.
-
-USER PROFILE:
-- Weight: ${weight} kg
-- Goal: ${goal.replace(/_/g, ' ')}
-- Fitness Level: ${fitnessLevel} (${levelNote})
-- Diet Preference: ${diet_preference || 'non_vegetarian'}
-- Daily Calorie Target: ${cals} kcal
-- Training Style: ${guide.style}
-
-DIET RULES (MUST FOLLOW):
-${dietRule}
-
-MACRO TARGETS:
-${guide.macros}
-
-FOOD GUIDANCE:
-${guide.meals}
-
-MEAL COUNT:
-${mealCountNote}
-
-AFFORDABILITY RULES (CRITICAL):
-1. Use ONLY affordable, everyday Indian kitchen ingredients.
-2. For each meal, provide 2-3 ALTERNATIVES.
-
-STRICT RULES:
-1. Every meal MUST use affordable Indian home-cooked food.
-2. All calorie and macro values must be realistic NUMBERS.
-3. Total calories across ALL meals should closely match ${cals}.
-4. Variety seed: ${randomSeed}
-5. RESPECT THE DIET PREFERENCE.
-
-Return ONLY a JSON object, no markdown, no backticks:
-{
-  "breakfast": { "name": "Dish Name", "calories": 400, "protein": 25, "carbs": 45, "fats": 10, "alternatives": ["Alt 1", "Alt 2"] },
-  "lunch": { "name": "Dish Name", "calories": 550, "protein": 35, "carbs": 50, "fats": 15, "alternatives": ["Alt 1", "Alt 2"] },
-  "dinner": { "name": "Dish Name", "calories": 500, "protein": 30, "carbs": 40, "fats": 12, "alternatives": ["Alt 1", "Alt 2"] },
-  "snacks": [{ "name": "Snack Name", "calories": 150, "protein": 10, "carbs": 15, "fats": 5, "alternatives": ["Alt 1", "Alt 2"] }],
-  ${extraMealsExample}
-  "total_calories": ${cals},
-  "total_protein": 120,
-  "total_carbs": 180,
-  "total_fats": 50
-}`;
-
-        const completion = await openai.chat.completions.create({
-            model: "gemini-1.5-flash",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.85,
-            max_tokens: 2048,
-        });
-
-        let rawText = completion.choices[0]?.message?.content || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const plan = extractJSON(rawText);
-        res.json({ plan });
-
-    } catch (error) {
-        console.error('Meal Plan Error:', error);
-        res.status(500).json({ error: error.message || 'Failed to generate meal plan' });
-    }
-};
-
-exports.scanFoodImage = async (req, res) => {
-    try {
-        const { imageBase64, mimeType } = req.body;
-
-        if (!imageBase64 || !mimeType) {
-            return res.status(400).json({ error: 'Image data and mimeType are required' });
-        }
-
-        const openai = getOpenAIModel();
-
-        const prompt = `Identify the food in this image. 
-        Provide an estimated calorie count and macronutrient breakdown per standard serving.
-        
-        Return ONLY a stringified JSON object. Do not include markdown formatting.
-        {
-          "food_name": "String name of the food",
-          "confidence_score": "Percentage string",
-          "calories": number,
-          "protein": number,
-          "carbs": number,
-          "fats": number,
-          "unit": "100g"
-        }`;
-
-        const completion = await openai.chat.completions.create({
-            model: 'gemini-1.5-flash',
-            messages: [
-                {
-                    role: "user",
-                    content: [
-                        { type: "text", text: prompt },
-                        {
-                            type: "image_url",
-                            image_url: {
-                                url: `data:${mimeType};base64,${imageBase64}`,
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens: 1024,
-            stream: false
-        });
-
-        let rawText = completion.choices[0]?.message?.content || "";
+        const result = await model.generateContent([
+            prompt,
+            { inlineData: { data: imageBase64, mimeType } }
+        ]);
+        let rawText = result.response.text() || "";
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
         const data = extractJSON(rawText);
@@ -470,7 +146,7 @@ exports.lookupFoodByText = async (req, res) => {
             return res.status(400).json({ error: 'Food name is required' });
         }
 
-        const openai = getOpenAIModel();
+        const model = getGeminiModel();
 
         const prompt = `You are a nutrition database. The user wants to know the macros of: "${foodName.trim()}"
 
@@ -489,14 +165,8 @@ Return ONLY a JSON object. No markdown, no backticks:
   "unit": "100g"
 }`;
 
-        const completion = await openai.chat.completions.create({
-            model: "gemini-1.5-flash",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.2,
-            max_tokens: 512,
-        });
-
-        let rawText = completion.choices[0]?.message?.content || "";
+        const result = await model.generateContent(prompt);
+        let rawText = result.response.text() || "";
         rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
 
         const data = extractJSON(rawText);
@@ -575,7 +245,7 @@ exports.generateStoreRecommendations = async (req, res) => {
         const userId = req.user?.userId;
         const { goal, equipment, diet_preference, fitness_level, recent_focus } = req.body;
 
-        const openai = getOpenAIModel();
+        const model = getGeminiModel();
 
         const prompt = `You are a sports nutrition and fitness equipment expert.
 A user has the following profile:
