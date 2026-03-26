@@ -3,10 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const mongoose = require('mongoose');
-const dns = require('dns');
-
-// Force IPv4 globally to prevent Node.js from attempting IPv6 on Render (which causes ENETUNREACH)
-dns.setDefaultResultOrder('ipv4first');
 
 // ── Startup guards ──────────────────────────────────────────────────────────
 const REQUIRED_ENV = ['JWT_SECRET', 'MONGODB_URI'];

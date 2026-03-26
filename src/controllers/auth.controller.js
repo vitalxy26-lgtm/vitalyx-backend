@@ -9,7 +9,7 @@ const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true, // true for 465, false for 587
-    family: 4,    // FORCE IPv4 to specifically fix ENETUNREACH
+    family: 6,    // FORCE IPv6 instead of IPv4
     auth: {
         user: process.env.SMTP_USER,
         pass: (process.env.SMTP_PASS || '').trim(),

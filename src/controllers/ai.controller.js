@@ -1,12 +1,12 @@
 const OpenAI = require('openai');
 
 const getOpenAIModel = () => {
-    if (!process.env.NVIDIA_API_KEY) {
-        throw new Error('NVIDIA_API_KEY is missing from environment variables.');
+    if (!process.env.GEMINI_API_KEY) {
+        throw new Error('GEMINI_API_KEY is missing from environment variables.');
     }
     return new OpenAI({
-        apiKey: process.env.NVIDIA_API_KEY,
-        baseURL: 'https://integrate.api.nvidia.com/v1',
+        apiKey: process.env.GEMINI_API_KEY,
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
     });
 }
 
@@ -86,7 +86,7 @@ exports.chatCoach = async (req, res) => {
         User Profile: ${context ? JSON.stringify(context) : 'No specific context provided'}${behaviourStr}`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: message }
@@ -137,7 +137,7 @@ exports.generateWorkoutPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 3000,
@@ -205,7 +205,7 @@ exports.generateWeeklyPlan = async (req, res) => {
         ]`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.3,
             max_tokens: 4000,
@@ -388,7 +388,7 @@ Return ONLY a JSON object, no markdown, no backticks:
 }`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.85,
             max_tokens: 2048,
@@ -431,7 +431,7 @@ exports.scanFoodImage = async (req, res) => {
         }`;
 
         const completion = await openai.chat.completions.create({
-            model: 'meta/llama-3.2-11b-vision-instruct',
+            model: 'gemini-1.5-flash',
             messages: [
                 {
                     role: "user",
@@ -490,7 +490,7 @@ Return ONLY a JSON object. No markdown, no backticks:
 }`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.2,
             max_tokens: 512,
@@ -607,7 +607,7 @@ IMPORTANT:
 - Tailor to Indian market availability`;
 
         const completion = await openai.chat.completions.create({
-            model: "meta/llama-3.1-405b-instruct",
+            model: "gemini-1.5-flash",
             messages: [{ role: 'user', content: prompt }],
             temperature: 0.4,
             max_tokens: 2000,
