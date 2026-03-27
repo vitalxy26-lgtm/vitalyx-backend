@@ -3,7 +3,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const getGeminiModel = () => {
     if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    return genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    return genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 };
 
 // Robustly extract JSON from AI response even if it has surrounding text
