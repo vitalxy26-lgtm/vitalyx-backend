@@ -306,7 +306,7 @@ exports.setupProfile = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             { age, gender, height, weight, goal, fitness_level, diet_preference, target_weight, target_timeframe_weeks, equipment },
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         ).select('-password_hash');
 
         if (!updatedUser) {

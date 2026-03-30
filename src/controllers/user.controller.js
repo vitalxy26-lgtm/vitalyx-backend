@@ -28,7 +28,7 @@ exports.updateProfile = async (req, res) => {
             updates.weight_updated_at = new Date();
         }
 
-        const user = await User.findByIdAndUpdate(userId, updates, { new: true }).select('-password_hash');
+        const user = await User.findByIdAndUpdate(userId, updates, { returnDocument: 'after' }).select('-password_hash');
         if (!user) return res.status(404).json({ error: 'User not found' });
 
         res.json({ message: 'Profile updated', user: serializeUser(user) });
@@ -91,7 +91,7 @@ exports.upgradeSubscription = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             { is_premium: true },
-            { new: true }
+            { returnDocument: 'after' }
         ).select('-password_hash');
 
         if (!updatedUser) {
@@ -212,11 +212,13 @@ exports.getTodayDashboard = async (req, res) => {
     try {
         const userId = req.user?.userId;
         const DietLog = require('../models/DietLog.model');
+        const WorkoutLog = require('../models/WorkoutLog.model');
         const today = getTodayStart();
 
-        const [user, dietLog] = await Promise.all([
+        const [user, dietLog, workoutLog] = await Promise.all([
             User.findById(userId),
             DietLog.findOne({ user_id: userId, date: { $gte: today } }).sort({ date: -1 }),
+            WorkoutLog.exists({ user_id: userId, date: { $gte: today } })
         ]);
 
         if (!user) {
@@ -248,6 +250,7 @@ exports.getTodayDashboard = async (req, res) => {
             targets,
             meals_logged: dietLog?.items?.length || 0,
             recent_meals: recentMeals,
+            workout_completed_today: !!workoutLog,
             updated_at: dietLog?.updatedAt || null,
         });
     } catch (error) {

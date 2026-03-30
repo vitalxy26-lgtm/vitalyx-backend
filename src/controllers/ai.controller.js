@@ -1,9 +1,51 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
+// ── Multi-Key Round-Robin with Auto-Fallback ────────────────────────────────
+const getApiKeys = () => {
+    // Support comma-separated keys: GEMINI_API_KEYS=key1,key2,key3
+    const multiKeys = process.env.GEMINI_API_KEYS;
+    if (multiKeys) {
+        const keys = multiKeys.split(',').map(k => k.trim()).filter(Boolean);
+        if (keys.length > 0) return keys;
+    }
+    // Fallback to single key for backward compatibility
+    if (process.env.GEMINI_API_KEY) return [process.env.GEMINI_API_KEY];
+    throw new Error('GEMINI_API_KEY or GEMINI_API_KEYS is missing');
+};
+
+let _keyIndex = 0;
+
 const getGeminiModel = () => {
-    if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    return genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const keys = getApiKeys();
+    const key = keys[_keyIndex % keys.length];
+    _keyIndex = (_keyIndex + 1) % keys.length;
+    const genAI = new GoogleGenerativeAI(key);
+    return genAI.getGenerativeModel({ model: 'gemini-3-flash-live' });
+};
+
+// Wrapper: call Gemini with automatic retry on rate-limit using next key
+const callWithFallback = async (fn) => {
+    const keys = getApiKeys();
+    const totalKeys = keys.length;
+    let lastError;
+
+    for (let attempt = 0; attempt < totalKeys; attempt++) {
+        try {
+            const model = getGeminiModel();
+            return await fn(model);
+        } catch (err) {
+            lastError = err;
+            const status = err?.status || err?.httpStatusCode || err?.code;
+            const msg = (err?.message || '').toLowerCase();
+            const isRateLimit = status === 429 || msg.includes('resource exhausted') || msg.includes('rate limit') || msg.includes('quota');
+            if (isRateLimit && attempt < totalKeys - 1) {
+                console.warn(`⚠ API key #${((_keyIndex - 1 + totalKeys) % totalKeys) + 1} rate-limited, rotating to next key...`);
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw lastError;
 };
 
 // Robustly extract JSON from AI response even if it has surrounding text
@@ -66,8 +108,6 @@ exports.chatCoach = async (req, res) => {
             return res.status(400).json({ error: 'Message is required' });
         }
 
-        const model = getGeminiModel();
-
         let behaviourStr = '';
         if (userId) {
             const behaviour = await getBehaviourContext(userId);
@@ -82,8 +122,10 @@ exports.chatCoach = async (req, res) => {
         If they ask about diet, provide healthy, macro-aware suggestions.
         User Profile: ${context ? JSON.stringify(context) : 'No specific context provided'}${behaviourStr}`;
 
-        const result = await model.generateContent(systemPrompt + "\n\nUser Message: " + message);
-        const responseText = result.response.text() || "Coach ran into an issue finding an answer.";
+        const responseText = await callWithFallback(async (model) => {
+            const result = await model.generateContent(systemPrompt + "\n\nUser Message: " + message);
+            return result.response.text() || "Coach ran into an issue finding an answer.";
+        });
         res.json({ reply: responseText });
     } catch (error) {
         console.error('AI Coach Error:', error);
@@ -95,8 +137,6 @@ exports.chatCoach = async (req, res) => {
 exports.generateWorkoutPlan = async (req, res) => {
     try {
         const { goal, fitness_level, equipment, days, target_weight, target_timeframe_weeks } = req.body;
-
-        const model = getGeminiModel();
 
         const prompt = `Generate a structured ${days || 3}-day workout plan for someone with the following profile:
         Goal: ${goal}
@@ -125,11 +165,12 @@ exports.generateWorkoutPlan = async (req, res) => {
             }
         ]`;
 
-        const result = await model.generateContent(prompt);
-        let rawText = result.response.text() || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const plan = extractJSON(rawText);
+        const plan = await callWithFallback(async (model) => {
+            const result = await model.generateContent(prompt);
+            let rawText = result.response.text() || "";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
         res.json({ plan });
 
     } catch (error) {
@@ -142,14 +183,12 @@ exports.generateWorkoutPlan = async (req, res) => {
 exports.generateWeeklyPlan = async (req, res) => {
     try {
         const userId = req.user?.userId;
-        const { goal, fitness_level, equipment, custom_request, duration_minutes } = req.body;
+        const { goal, fitness_level, equipment, custom_request, duration_minutes, weight } = req.body;
         const durationMinutes =
             Number.isFinite(Number(duration_minutes)) && Number(duration_minutes) > 0
                 ? Number(duration_minutes)
                 : 60;
         const customRequest = custom_request?.trim();
-
-        const model = getGeminiModel();
 
         const splitHint = goal === 'muscle_gain'
             ? 'Monday=Chest, Tuesday=Back, Wednesday=Shoulders, Thursday=Arms (Biceps+Triceps), Friday=Abs/Core, Saturday=Legs'
@@ -157,8 +196,24 @@ exports.generateWeeklyPlan = async (req, res) => {
                 ? 'Monday=Full Body HIIT, Tuesday=Upper Body, Wednesday=Core/Abs, Thursday=Lower Body, Friday=Full Body Cardio, Saturday=Active Recovery/Stretching'
                 : 'Monday=Chest, Tuesday=Abs/Core, Wednesday=Back, Thursday=Shoulders, Friday=Arms, Saturday=Legs';
 
+        const WeeklyPlan = require('../models/WeeklyPlan.model');
+        const previousPlan = await WeeklyPlan.findOne({ user_id: userId });
+        let progressiveOverloadContext = '';
+
+        if (previousPlan && previousPlan.days && previousPlan.days.length > 0) {
+            progressiveOverloadContext = `
+            PROGRESSIVE OVERLOAD REQUIRED:
+            Below is the user's workout plan from LAST WEEK. You MUST analyze this plan and slightly increase the difficulty for this new week to ensure continuous progress. 
+            Do NOT copy the previous plan unchanged. You should increase reps (e.g., 10 -> 12), increase sets (e.g., 3 -> 4), increase duration/set (e.g., 60s -> 75s), or substitute an exercise for a slightly harder variation.
+            
+            LAST WEEK'S PLAN:
+            ${JSON.stringify(previousPlan.days)}
+            `;
+        }
+
         const prompt = `Generate a full 6-day weekly workout plan for someone with:
         Goal: ${goal || 'maintain_weight'}
+        Current Weight: ${weight ? weight + ' kg' : 'Unknown'}
         Fitness Level: ${fitness_level || 'intermediate'}
         Equipment: ${equipment || 'home_no_equipment'}
         Target workout duration per day: approximately ${durationMinutes} minutes
@@ -166,6 +221,11 @@ exports.generateWeeklyPlan = async (req, res) => {
 
         Use this muscle group split: ${splitHint}
         Sunday is a rest day, do not include it.
+        ${progressiveOverloadContext}
+
+        CRITICAL WEIGHT DIRECTIVES:
+        The user is currently at ${weight ? weight + ' kg' : 'their weight'}. If they want to gain muscle, or if they want to lose fat, evaluate if their current weight implies they need intense cardio to burn fat or heavy low-rep sets to put on dense mass. You must factor this weight tracking into their new routine!
+
 
         REQUIREMENTS:
         - Each day must have minimum 4 exercises
@@ -188,11 +248,12 @@ exports.generateWeeklyPlan = async (req, res) => {
           }
         ]`;
 
-        const result = await model.generateContent(prompt);
-        let rawText = result.response.text() || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const days = extractJSON(rawText);
+        const days = await callWithFallback(async (model) => {
+            const result = await model.generateContent(prompt);
+            let rawText = result.response.text() || "";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
 
         const WeeklyPlan = require('../models/WeeklyPlan.model');
         const plan = await WeeklyPlan.findOneAndUpdate(
@@ -232,8 +293,6 @@ exports.generateMealPlan = async (req, res) => {
     try {
         const userId = req.user?.userId;
         const { targetCalories, diet_preference } = req.body;
-
-        const model = getGeminiModel();
 
         const User = require('../models/User.model');
         const user = userId ? await User.findById(userId) : null;
@@ -367,11 +426,12 @@ Return ONLY a JSON object, no markdown, no backticks:
   "total_fats": 50
 }`;
 
-        const result = await model.generateContent(prompt);
-        let rawText = result.response.text() || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const plan = extractJSON(rawText);
+        const plan = await callWithFallback(async (model) => {
+            const result = await model.generateContent(prompt);
+            let rawText = result.response.text() || "";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
         res.json({ plan });
 
     } catch (error) {
@@ -389,8 +449,6 @@ exports.scanFoodImage = async (req, res) => {
             return res.status(400).json({ error: 'Image data and mimeType are required' });
         }
 
-        const model = getGeminiModel();
-
         const prompt = `Identify the food in this image. 
         Provide an estimated calorie count and macronutrient breakdown per standard serving.
         
@@ -405,14 +463,15 @@ exports.scanFoodImage = async (req, res) => {
           "unit": "100g"
         }`;
 
-        const result = await model.generateContent([
-            prompt,
-            { inlineData: { data: imageBase64, mimeType } }
-        ]);
-        let rawText = result.response.text() || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const data = extractJSON(rawText);
+        const data = await callWithFallback(async (model) => {
+            const result = await model.generateContent([
+                prompt,
+                { inlineData: { data: imageBase64, mimeType } }
+            ]);
+            let rawText = result.response.text() || "";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
         res.json({ data });
 
     } catch (error) {
@@ -429,8 +488,6 @@ exports.lookupFoodByText = async (req, res) => {
         if (!foodName || !foodName.trim()) {
             return res.status(400).json({ error: 'Food name is required' });
         }
-
-        const model = getGeminiModel();
 
         const prompt = `You are a nutrition database. The user wants to know the macros of: "${foodName.trim()}"
 
@@ -449,11 +506,12 @@ Return ONLY a JSON object. No markdown, no backticks:
   "unit": "100g"
 }`;
 
-        const result = await model.generateContent(prompt);
-        let rawText = result.response.text() || "";
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-
-        const data = extractJSON(rawText);
+        const data = await callWithFallback(async (model) => {
+            const result = await model.generateContent(prompt);
+            let rawText = result.response.text() || "";
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
         res.json({ data });
 
     } catch (error) {
@@ -531,8 +589,6 @@ exports.generateStoreRecommendations = async (req, res) => {
         const userId = req.user?.userId;
         const { goal, equipment, diet_preference, fitness_level, recent_focus } = req.body;
 
-        const model = getGeminiModel();
-
         const prompt = `You are a sports nutrition and fitness equipment expert.
 A user has the following profile:
 - Goal: ${goal || 'maintain_weight'}
@@ -562,10 +618,12 @@ IMPORTANT:
 - Products must be real (e.g. MuscleBlaze Whey, Boldfit Dumbbells, etc.)
 - Tailor to Indian market availability`;
 
-        const result = await model.generateContent(prompt);
-        let rawText = result.response.text() || '';
-        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        const products = extractJSON(rawText);
+        const products = await callWithFallback(async (model) => {
+            const result = await model.generateContent(prompt);
+            let rawText = result.response.text() || '';
+            rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return extractJSON(rawText);
+        });
 
         const affiliateTag = process.env.AMAZON_AFFILIATE_TAG || '';
         const tagParam = affiliateTag ? `&tag=${affiliateTag}` : '';
