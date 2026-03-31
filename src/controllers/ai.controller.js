@@ -255,7 +255,6 @@ exports.generateWeeklyPlan = async (req, res) => {
             return extractJSON(rawText);
         });
 
-        const WeeklyPlan = require('../models/WeeklyPlan.model');
         const plan = await WeeklyPlan.findOneAndUpdate(
             { user_id: userId },
             {
