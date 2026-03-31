@@ -20,7 +20,7 @@ const getGeminiModel = () => {
     const key = keys[_keyIndex % keys.length];
     _keyIndex = (_keyIndex + 1) % keys.length;
     const genAI = new GoogleGenerativeAI(key);
-    return genAI.getGenerativeModel({ model: 'gemini-3-flash-live' });
+    return genAI.getGenerativeModel({ model: 'gemini-3.1-flash-lite' });
 };
 
 // Wrapper: call Gemini with automatic retry on rate-limit using next key
