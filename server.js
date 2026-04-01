@@ -39,6 +39,13 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ limit: '1mb', extended: true }));
 
+// ── Activity tracker (for smart keep-alive) ────────────────────────────────
+let lastActivity = Date.now();
+app.use((req, res, next) => {
+  if (req.path !== '/health') lastActivity = Date.now(); // ignore self-pings
+  next();
+});
+
 // Routes
 app.use('/api/ai/scanfood', express.json({ limit: '50mb' }));  // large payloads only here
 app.use('/api/ai', aiRoutes);
@@ -57,7 +64,6 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ error: 'Something went wrong' });
 });
 
-// ── Database Connection ─────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_URI, {
   serverSelectionTimeoutMS: 5000,
 })
@@ -65,6 +71,23 @@ mongoose.connect(process.env.MONGODB_URI, {
     console.log('MongoDB connected successfully');
     app.listen(PORT, () => {
       console.log(`Server is running on port ${PORT}`);
+
+      // ── Smart keep-alive: pings only when server is idle ────────────
+      const IDLE_THRESHOLD_MS = 50 * 1000;  // 50 seconds of no activity
+      const CHECK_INTERVAL_MS = 60 * 1000;  // check every 60 seconds
+      const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+
+      setInterval(async () => {
+        const idleFor = Date.now() - lastActivity;
+        if (idleFor >= IDLE_THRESHOLD_MS) {
+          try {
+            const res = await fetch(`${SELF_URL}/health`);
+            console.log(`[keep-alive] idle ${Math.round(idleFor / 1000)}s → pinged /health → ${res.status}`);
+          } catch (e) {
+            console.log(`[keep-alive] ping failed: ${e.message}`);
+          }
+        }
+      }, CHECK_INTERVAL_MS);
     });
   })
   .catch(err => {
